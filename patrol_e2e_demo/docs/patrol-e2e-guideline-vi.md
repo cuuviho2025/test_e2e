@@ -39,6 +39,7 @@ Các file chính trong project này:
 lib/main.dart
 test/widget_test.dart
 patrol_test/app_test.dart
+android/app/src/androidTest/java/com/example/patrol_e2e_demo/MainActivityTest.java
 pubspec.yaml
 README.md
 AGENTS.md
@@ -50,6 +51,8 @@ docs/patrol-e2e-guideline-vi.md
 - `lib/main.dart`: app mẫu để test.
 - `test/widget_test.dart`: widget smoke test bằng Flutter test.
 - `patrol_test/app_test.dart`: E2E test bằng Patrol.
+- `android/app/src/androidTest/.../MainActivityTest.java`: bridge JUnit để
+  Patrol Android gọi được các test Dart đã bundle.
 - `pubspec.yaml`: khai báo dependency và block `patrol:`.
 - `AGENTS.md`: ghi chú cho Codex phiên sau.
 - `README.md`: hướng dẫn ngắn cho project.
@@ -123,6 +126,90 @@ patrol:
 Lấy `package_name` Android từ `android/app/build.gradle` hoặc
 `android/app/build.gradle.kts`. Lấy `bundle_id` iOS từ Xcode project hoặc
 `ios/Runner.xcodeproj`.
+
+### Setup Android Bắt Buộc
+
+Trong `android/app/build.gradle` hoặc `android/app/build.gradle.kts`, cần dùng
+Patrol runner:
+
+```kotlin
+defaultConfig {
+    testInstrumentationRunner = "pl.leancode.patrol.PatrolJUnitRunner"
+    testInstrumentationRunnerArguments["clearPackageData"] = "true"
+}
+
+testOptions {
+    execution = "ANDROIDX_TEST_ORCHESTRATOR"
+}
+
+dependencies {
+    androidTestUtil("androidx.test:orchestrator:1.5.1")
+}
+```
+
+Với Android Patrol, project cũng cần một JUnit bridge ở source set
+`androidTest`. Nếu thiếu file này, Gradle vẫn có thể build và command
+`patrol test` vẫn exit `0`, nhưng report sẽ là:
+
+```text
+Total: 0
+Successful: 0
+Failed: 0
+Skipped: 0
+```
+
+Đó không phải là test pass thật. Nó nghĩa là Android instrumentation không có
+JUnit test class nào để gọi sang danh sách Dart Patrol tests.
+
+Tạo file theo package app của bạn:
+
+```text
+android/app/src/androidTest/java/com/example/your_app/MainActivityTest.java
+```
+
+Nội dung mẫu:
+
+```java
+package com.example.your_app;
+
+import androidx.test.platform.app.InstrumentationRegistry;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
+import pl.leancode.patrol.PatrolJUnitRunner;
+
+@RunWith(Parameterized.class)
+public class MainActivityTest {
+    @Parameters(name = "{0}")
+    public static Object[] testCases() {
+        PatrolJUnitRunner instrumentation =
+                (PatrolJUnitRunner) InstrumentationRegistry.getInstrumentation();
+        instrumentation.setUp(MainActivity.class);
+        instrumentation.waitForPatrolAppService();
+        return instrumentation.listDartTests();
+    }
+
+    public MainActivityTest(String dartTestName) {
+        this.dartTestName = dartTestName;
+    }
+
+    private final String dartTestName;
+
+    @Test
+    public void runDartTest() {
+        PatrolJUnitRunner instrumentation =
+                (PatrolJUnitRunner) InstrumentationRegistry.getInstrumentation();
+        instrumentation.runDartTest(dartTestName);
+    }
+}
+```
+
+Khi copy sang project khác, phải sửa:
+
+- Dòng `package com.example.your_app;`.
+- Đường dẫn thư mục `java/com/example/your_app/`.
+- Tên activity nếu app không dùng `MainActivity`.
 
 ## 6. Viết Test Patrol Đầu Tiên
 
@@ -214,13 +301,14 @@ flutter analyze
 flutter test
 ~/.pub-cache/bin/patrol test -d chrome --web-headless=true --target patrol_test/app_test.dart
 ~/.pub-cache/bin/patrol test -d chrome --web-headless=false --target patrol_test/app_test.dart
+~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart
 ```
 
 Kết quả Patrol:
 
 ```text
-Total: 1
-Successful: 1
+Total: 4
+Successful: 4
 Failed: 0
 Skipped: 0
 ```
@@ -234,6 +322,19 @@ verify Welcome, tester@example.com
 tap incrementButton
 tap incrementButton
 verify Counter: 2
+empty submit keeps No email submitted
+replace first@example.com with second@example.com
+tap incrementButton 20 times
+verify Counter: 20
+```
+
+Android đã verify trên:
+
+```text
+Medium_Phone_API_36.1 / emulator-5554
+Android 16 / API 36
+patrol_cli v4.4.0
+patrol package 4.6.1
 ```
 
 ## 9. Chạy Test Trên Android
@@ -262,10 +363,175 @@ Nếu Android licenses chưa accepted:
 flutter doctor --android-licenses
 ```
 
-Trong môi trường đã verify project này, Android SDK có tồn tại nhưng không có
-Android emulator/device đang connected, nên mới verify trên Chrome/web.
+Chạy emulator có sẵn:
 
-## 10. Pattern Viết Test Nên Dùng
+```bash
+flutter emulators
+flutter emulators --launch <emulator_id>
+adb wait-for-device
+flutter devices
+```
+
+Ví dụ từ lần verify project này:
+
+```bash
+flutter emulators --launch Medium_Phone_API_36.1
+adb wait-for-device
+flutter devices
+~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart
+```
+
+Kết quả Android đúng phải có `Total` lớn hơn 0. Với bộ test hiện tại của repo
+này:
+
+```text
+Test summary:
+Total: 4
+Successful: 4
+Failed: 0
+Skipped: 0
+```
+
+Nếu thấy `Total: 0`, kiểm tra lại `MainActivityTest.java` trong
+`androidTest`.
+
+## 10. Tối Ưu Thời Gian Chạy Patrol Android Trên PC Khác
+
+Patrol Android chậm hơn web/widget test là bình thường. Nó không chỉ chạy Dart
+test, mà còn làm các bước Android native:
+
+```text
+generate patrol_test/test_bundle.dart
+flutter build apk --config-only
+Gradle assembleDebug
+Gradle assembleDebugAndroidTest
+ADB uninstall/install app APK
+ADB uninstall/install androidTest APK
+connectedDebugAndroidTest
+PatrolJUnitRunner start app service
+run Dart Patrol test
+write Android test report
+```
+
+Trong project mẫu này, warm build sau khi emulator đã sẵn sàng khoảng 9 giây.
+Tổng warm run Android cho 4 test hiện tại khoảng 2m46s. Các test case Dart riêng
+lẻ mất khoảng 3-21 giây, phần còn lại là overhead của Android instrumentation,
+orchestrator, install/uninstall và app service startup. Lần đầu trên PC mới có
+thể mất vài phút, và với source lớn có thể lên 10-15 phút nếu cache chưa có hoặc
+máy chậm.
+
+### Nguyên Nhân Chậm Phổ Biến
+
+- Cold build lần đầu: Flutter, Gradle, Kotlin/Java, Android transform/dex chưa
+  có cache.
+- Lần đầu sau khi đổi Flutter SDK, Android Gradle Plugin, Gradle wrapper,
+  `compileSdk`, dependency hoặc Dart define.
+- Emulator vừa boot, hệ thống Android chưa ổn định hoàn toàn.
+- Gradle phải build cả app APK và androidTest APK.
+- App có nhiều native plugin hoặc build nhiều ABI như `arm64-v8a`,
+  `armeabi-v7a`, `x86_64`.
+- Máy dùng disk chậm, RAM thấp, CPU ít core, hoặc chạy emulator không có
+  hardware acceleration.
+- Chạy `flutter clean` thường xuyên làm mất cache build.
+
+### Checklist Setup PC Khác
+
+1. Cài Flutter SDK đúng version của team.
+2. Cài Android Studio hoặc Android command-line tools.
+3. Cài Android SDK Platform, Build Tools, Platform Tools.
+4. Accept licenses:
+
+   ```bash
+   flutter doctor --android-licenses
+   ```
+
+5. Kiểm tra môi trường:
+
+   ```bash
+   flutter doctor -v
+   flutter devices
+   ```
+
+6. Cài Patrol CLI:
+
+   ```bash
+   dart pub global activate patrol_cli
+   ~/.pub-cache/bin/patrol --version
+   ```
+
+7. Lấy dependency trước khi chạy E2E:
+
+   ```bash
+   flutter pub get
+   ```
+
+8. Chạy test rẻ trước:
+
+   ```bash
+   flutter analyze
+   flutter test
+   ```
+
+9. Bật emulator và chờ device sẵn sàng:
+
+   ```bash
+   flutter emulators
+   flutter emulators --launch <emulator_id>
+   adb wait-for-device
+   flutter devices
+   ```
+
+10. Chạy Patrol Android:
+
+    ```bash
+    ~/.pub-cache/bin/patrol test -d <device_id> --target patrol_test/app_test.dart
+    ```
+
+### Checklist Tối Ưu Khi Chạy Hằng Ngày
+
+- Giữ emulator mở giữa các lần test.
+- Không chạy `flutter clean` nếu không thật sự cần.
+- Giữ `org.gradle.daemon=true`, `org.gradle.parallel=true`,
+  `org.gradle.caching=true` trong `android/gradle.properties` nếu project phù
+  hợp.
+- Chạy lại cùng một emulator x86_64 ổn định, không đổi device liên tục.
+- Nếu chỉ cần local smoke test, chạy một file target cụ thể:
+
+  ```bash
+  ~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart
+  ```
+
+- Với app lớn có native build chậm, cân nhắc giới hạn ABI debug cho local
+  emulator x86_64. Chỉ làm việc này nếu team hiểu tác động release/build matrix.
+- Không kỳ vọng việc gỡ app trong emulator làm build nhanh rõ rệt. Dọn app giúp
+  giảm background noise/RAM, còn thời gian chính vẫn nằm ở Flutter/Gradle/ADB.
+- Tránh để antivirus/indexer scan thư mục project, Gradle cache, Flutter cache
+  trên Windows nếu build quá chậm.
+
+### Khi Nào 15 Phút Là Bình Thường?
+
+15 phút có thể xảy ra ở lần đầu trên source lớn khi:
+
+- PC chưa có Gradle/Flutter cache.
+- Project nhiều plugin native hoặc flavor.
+- Emulator boot lần đầu.
+- Internet/cache dependency chậm.
+- Máy thiếu RAM nên Gradle/emulator bị swap.
+
+Nếu sau 2-3 lần chạy cùng source, cùng emulator mà vẫn 15 phút, cần điều tra:
+
+```bash
+~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart --verbose
+./gradlew :app:assembleDebug --profile
+./gradlew :app:assembleDebugAndroidTest --profile
+```
+
+Xem task nào tốn thời gian trong Gradle profile report. Nếu log kẹt ở
+`connectedDebugAndroidTest`, kiểm tra emulator/ADB/app startup. Nếu kẹt ở
+`assembleDebug`, đó là build Flutter/Android. Nếu kẹt ở
+`assembleDebugAndroidTest`, kiểm tra native test APK/dependency/desugar.
+
+## 11. Pattern Viết Test Nên Dùng
 
 Nên đặt tên test theo user flow:
 
@@ -308,7 +574,7 @@ await $('Dashboard').waitUntilVisible();
 
 thay vì sleep cứng.
 
-## 11. Native Automation Trên Mobile
+## 12. Native Automation Trên Mobile
 
 Patrol mạnh hơn `integration_test` thuần ở phần native automation. Ví dụ các
 case phù hợp trên Android/iOS:
@@ -338,7 +604,7 @@ patrolTest('handles location permission', ($) async {
 Các API native có thể thay đổi theo version Patrol, nên khi viết case native
 cần kiểm tra docs/API hiện tại của package đang dùng.
 
-## 12. Debug Lỗi Thường Gặp
+## 13. Debug Lỗi Thường Gặp
 
 ### `patrol: command not found`
 
@@ -364,6 +630,33 @@ flutter doctor -v
 ```
 
 Cần bật emulator hoặc cắm device thật, bật USB debugging.
+
+### Android chạy xong nhưng `Total: 0`
+
+Nguyên nhân thường là thiếu native JUnit bridge trong `androidTest`, hoặc package
+name/path không khớp.
+
+Kiểm tra:
+
+```text
+android/app/src/androidTest/java/<package_path>/MainActivityTest.java
+```
+
+Trong verbose log, nếu thấy:
+
+```text
+compileDebugAndroidTestKotlin NO-SOURCE
+compileDebugAndroidTestJavaWithJavac NO-SOURCE
+```
+
+thì Android test APK không có test class nào. Sau khi thêm
+`MainActivityTest.java`, log phải có:
+
+```text
+compileDebugAndroidTestJavaWithJavac
+```
+
+và report phải có `Total` lớn hơn 0.
 
 ### Test không tìm thấy widget
 
@@ -404,22 +697,25 @@ test-results/
 
 Trong project này các file đó đã được ignore trong `.gitignore`.
 
-## 13. Checklist Apply Vào Dự Án Thật
+## 14. Checklist Apply Vào Dự Án Thật
 
 1. Chạy `flutter analyze` để đảm bảo project sạch.
 2. Cài/update Patrol CLI.
 3. Thêm `patrol` vào `dev_dependencies`.
 4. Thêm block `patrol:` vào `pubspec.yaml`.
-5. Đặt `Key` cho các UI element quan trọng.
-6. Tạo `patrol_test/app_test.dart`.
-7. Viết smoke E2E flow ngắn nhất trước.
-8. Chạy trên web bằng Chrome headless.
-9. Nếu dự án mobile, chạy thêm Android/iOS device thật hoặc emulator.
-10. Thêm test vào CI sau khi local pass ổn định.
-11. Ignore generated files của Patrol/Playwright.
-12. Chỉ mở rộng E2E cho các flow quan trọng, không biến E2E thành test mọi chi tiết nhỏ.
+5. Android: cấu hình `PatrolJUnitRunner` trong Gradle.
+6. Android: thêm `MainActivityTest.java` trong `androidTest`.
+7. Đặt `Key` cho các UI element quan trọng.
+8. Tạo `patrol_test/app_test.dart`.
+9. Viết smoke E2E flow ngắn nhất trước.
+10. Chạy trên web bằng Chrome headless.
+11. Nếu dự án mobile, chạy thêm Android/iOS device thật hoặc emulator.
+12. Confirm report không phải `Total: 0`.
+13. Thêm test vào CI sau khi local pass ổn định.
+14. Ignore generated files của Patrol/Playwright.
+15. Chỉ mở rộng E2E cho các flow quan trọng, không biến E2E thành test mọi chi tiết nhỏ.
 
-## 14. Command Nhanh
+## 15. Command Nhanh
 
 ```bash
 # Check Flutter project
@@ -438,6 +734,14 @@ flutter test
 # List devices
 flutter devices
 
+# List and launch Android emulators
+flutter emulators
+flutter emulators --launch <emulator_id>
+adb wait-for-device
+
 # Run Patrol on a specific device
 ~/.pub-cache/bin/patrol test -d <device_id> --target patrol_test/app_test.dart
+
+# Run Patrol Android with diagnostic logs
+~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart --verbose
 ```

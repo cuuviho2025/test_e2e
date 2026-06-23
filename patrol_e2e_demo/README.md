@@ -17,13 +17,14 @@ flutter analyze
 flutter test
 ~/.pub-cache/bin/patrol test -d chrome --web-headless=true --target patrol_test/app_test.dart
 ~/.pub-cache/bin/patrol test -d chrome --web-headless=false --target patrol_test/app_test.dart
+~/.pub-cache/bin/patrol test -d emulator-5554 --target patrol_test/app_test.dart
 ```
 
 Patrol result:
 
 ```text
-Total: 1
-Successful: 1
+Total: 4
+Successful: 4
 Failed: 0
 Skipped: 0
 ```
@@ -37,10 +38,21 @@ tap submitButton -> OK
 tap incrementButton -> OK
 tap incrementButton -> OK
 verify Counter: 2 -> OK
+empty submit keeps No email submitted -> OK
+replace submitted email -> OK
+20 repeated counter taps -> OK
 ```
 
-The current machine has Chrome and Linux devices available. Android SDK exists,
-but no Android emulator/device was connected during verification.
+Android was verified on `Medium_Phone_API_36.1` / `emulator-5554` after adding
+the required Patrol native Android test stub:
+
+```text
+android/app/src/androidTest/java/com/example/patrol_e2e_demo/MainActivityTest.java
+```
+
+Without this stub, Android instrumentation can build and exit successfully while
+reporting `Total: 0`, because no JUnit test class is present to call into the
+bundled Dart Patrol tests.
 
 ## Installed Pieces
 
@@ -48,6 +60,8 @@ but no Android emulator/device was connected during verification.
 - `patrol_cli` global CLI, currently callable at `~/.pub-cache/bin/patrol`
 - `patrol:` config in `pubspec.yaml`
 - E2E test entrypoint at `patrol_test/app_test.dart`
+- Android Patrol JUnit bridge at
+  `android/app/src/androidTest/java/com/example/patrol_e2e_demo/MainActivityTest.java`
 
 ## Run The Demo Test
 
@@ -153,6 +167,42 @@ patrol test -d chrome --web-headless=true --target patrol_test/app_test.dart
    ```bash
    flutter devices
    ```
+
+   Android projects also need the Patrol JUnit bridge under
+   `android/app/src/androidTest/java/<your/package>/MainActivityTest.java`.
+   Copy the pattern from this repo and update the package name and
+   `MainActivity` import/package to match the app.
+
+## Android Emulator Performance Notes
+
+Patrol Android runs more slowly than web/widget tests because it builds the app
+APK and androidTest APK, installs them through ADB, starts Android
+instrumentation, then runs the Dart test through Patrol's native bridge. The
+actual Dart flow in this demo takes only a few seconds; most time is build,
+install, and instrumentation startup.
+
+Expected rough timings:
+
+- First run on a new PC or cold cache: several minutes, sometimes 10-15 minutes
+  on slower machines or after dependency/SDK changes.
+- Warm build with emulator already booted and Gradle cache intact: about 9
+  seconds for this demo.
+- Warm Android Patrol run for the current 4-test suite: about 2m46s.
+- Individual Dart UI test cases in the current suite: about 3-21 seconds each.
+
+To keep runs fast on another PC:
+
+- Keep the emulator open between runs.
+- Avoid `flutter clean` unless diagnosing a cache problem.
+- Keep Gradle daemon/cache enabled.
+- Run `flutter pub get` once before Patrol.
+- Run `flutter analyze` and `flutter test` before Android E2E to catch cheap
+  failures early.
+- Use one stable x86_64 emulator image for local E2E.
+- Consider limiting debug ABI to the emulator ABI in larger apps if native build
+  time dominates.
+- Do not rely on deleting emulator apps to make builds fast; it mostly reduces
+  background noise, not Gradle/Flutter build time.
 
 ## Notes From This Setup
 
